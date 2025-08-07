@@ -3,16 +3,16 @@ name: Build and Push to ECR using OIDC
 on:
   push:
     branches:
-      - app        # 🔁 Change this to your working branch (e.g., 'main')
+      - app  # 🔁 Change to your target branch if needed
 
 permissions:
-  id-token: write   # 🔐 Required for OIDC to work
-  contents: read
+  id-token: write   # 🔐 Required for OIDC
+  contents: read    # 🧾 Required to fetch code
 
 env:
-  AWS_REGION: us-east-1                         # 🔁 Your AWS region
-  ECR_REPOSITORY: app                           # 🔁 Your ECR repo name
-  IMAGE_TAG: latest                             # 🔁 or use ${{ github.sha }}
+  AWS_REGION: us-east-1          # 🔁 Change if your ECR is in a different region
+  ECR_REPOSITORY: app            # 🔁 Your ECR repo name
+  IMAGE_TAG: latest              # ✅ Can also use ${{ github.sha }}
 
 jobs:
   build-and-push:
@@ -25,23 +25,23 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::970547371216:role/github   # 🔁 Replace
+          role-to-assume: arn:aws:iam::970547371216:role/github   # 🔁 Update if your role name changes
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
+      - name: Build Docker image using buildx
         run: |
-          docker build -t $ECR_REPOSITORY:$IMAGE_TAG ./bookmyshow-app
+          docker buildx build --load -t "${ECR_REPOSITORY}:${IMAGE_TAG}" ./bookmyshow-app
 
       - name: Tag image with ECR URI
         run: |
-          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG"
-          docker tag $ECR_REPOSITORY:$IMAGE_TAG $IMAGE_URI
+          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker tag "${ECR_REPOSITORY}:${IMAGE_TAG}" "$IMAGE_URI"
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
       - name: Push image to Amazon ECR
         run: |
-          docker push $IMAGE_URI
+          docker push "$IMAGE_URI"
