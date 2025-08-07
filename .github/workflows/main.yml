@@ -1,47 +1,86 @@
-name: Build and Push to ECR using OIDC
+name: Build, Scan (Trivy + OWASP), and Push to ECR
 
 on:
   push:
     branches:
-      - app  # 🔁 Change to your target branch if needed
+      - app
 
 permissions:
-  id-token: write   # 🔐 Required for OIDC
-  contents: read    # 🧾 Required to fetch code
+  id-token: write
+  contents: read
 
 env:
-  AWS_REGION: us-east-1          # 🔁 Change if your ECR is in a different region
-  ECR_REPOSITORY: app            # 🔁 Your ECR repo name
-  IMAGE_TAG: latest              # ✅ Can also use ${{ github.sha }}
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: app
 
 jobs:
-  build-and-push:
+  build-scan-push:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set image tags
+        run: |
+          echo "COMMIT_TAG=${{ github.sha }}" >> $GITHUB_ENV
+          echo "LATEST_TAG=latest" >> $GITHUB_ENV
+
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::970547371216:role/github   # 🔁 Update if your role name changes
+          role-to-assume: arn:aws:iam::970547371216:role/github
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image using buildx
+      - name: Build Docker image with dual tags
         run: |
-          docker buildx build --load -t "${ECR_REPOSITORY}:${IMAGE_TAG}" ./bookmyshow-app
+          docker buildx build --load -t "${ECR_REPOSITORY}:${COMMIT_TAG}" ./bookmyshow-app
+          docker tag "${ECR_REPOSITORY}:${COMMIT_TAG}" "${ECR_REPOSITORY}:${LATEST_TAG}"
+
+      - name: Trivy scan - Docker image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${ECR_REPOSITORY}:${COMMIT_TAG}"
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Trivy scan - Source code
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: ./bookmyshow-app
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+      - name: OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: "bookmyshow-app"
+          path: ./bookmyshow-app
+          format: 'HTML'
+          out: 'reports'
+
+      - name: Upload OWASP Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports
 
       - name: Tag image with ECR URI
         run: |
-          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-          docker tag "${ECR_REPOSITORY}:${IMAGE_TAG}" "$IMAGE_URI"
-          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          echo "IMAGE_URI_SHA=${REGISTRY}/${ECR_REPOSITORY}:${COMMIT_TAG}" >> $GITHUB_ENV
+          echo "IMAGE_URI_LATEST=${REGISTRY}/${ECR_REPOSITORY}:${LATEST_TAG}" >> $GITHUB_ENV
+          docker tag "${ECR_REPOSITORY}:${COMMIT_TAG}" "$IMAGE_URI_SHA"
+          docker tag "${ECR_REPOSITORY}:${COMMIT_TAG}" "$IMAGE_URI_LATEST"
 
-      - name: Push image to Amazon ECR
+      - name: Push both image tags to ECR
         run: |
-          docker push "$IMAGE_URI"
+          docker push "$IMAGE_URI_SHA"
+          docker push "$IMAGE_URI_LATEST"
